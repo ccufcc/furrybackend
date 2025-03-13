@@ -2,16 +2,19 @@ require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const bodyParser = require('body-parser');
-const cors = require('cors'); // <-- Add this line
+const cors = require('cors');
 
 const app = express();
 app.use(bodyParser.json());
-app.use(cors()); // <-- Add this line to allow all requests
+app.use(cors());
 
 const CLIENT_ID = process.env.CLIENT_ID;
 const CLIENT_SECRET = process.env.CLIENT_SECRET;
 const REFRESH_TOKEN = process.env.REFRESH_TOKEN;
 const PROPERTY_ID = process.env.PROPERTY_ID;
+
+let cachedData = { activeUsers: 0 }; // Cache active users count
+let lastUpdated = 0; // Timestamp of last fetch
 
 async function getAccessToken() {
     try {
@@ -33,7 +36,7 @@ async function getAccessToken() {
     }
 }
 
-app.get('/active-users', async (req, res) => {
+async function fetchActiveUsers() {
     try {
         console.log("Fetching active users from Google Analytics...");
         const accessToken = await getAccessToken();
@@ -43,14 +46,21 @@ app.get('/active-users', async (req, res) => {
             { headers: { Authorization: `Bearer ${accessToken}` } }
         );
 
-        console.log("API Response:", response.data);
-
         const activeUsers = response.data.rows?.[0]?.metricValues?.[0]?.value || "0";
-        res.json({ activeUsers });
+        cachedData = { activeUsers: parseInt(activeUsers) }; // Store as integer
+        lastUpdated = Date.now();
+        console.log("Updated Active Users:", cachedData.activeUsers);
     } catch (error) {
         console.error("Error fetching active users:", error.response?.data || error.message);
-        res.status(500).json({ error: "Failed to fetch active users" });
     }
+}
+
+// Fetch active users every 60 seconds (API call limit safe)
+setInterval(fetchActiveUsers, 60000);
+fetchActiveUsers(); // Fetch immediately on startup
+
+app.get('/active-users', (req, res) => {
+    res.json({ activeUsers: cachedData.activeUsers, lastUpdated });
 });
 
 const PORT = process.env.PORT || 3000;
