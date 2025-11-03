@@ -13,54 +13,76 @@ const CLIENT_SECRET = process.env.CLIENT_SECRET;
 const REFRESH_TOKEN = process.env.REFRESH_TOKEN;
 const PROPERTY_ID = process.env.PROPERTY_ID;
 
-let cachedData = { activeUsers: 0 }; // Cache active users count
-let lastUpdated = 0; // Timestamp of last fetch
+let cache = {
+  total: 0,
+  byCountry: {},   // { "United States": 42, "Taiwan": 18, ... }
+  lastUpdated: 0
+};
 
 async function getAccessToken() {
-    try {
-        console.log("Requesting new access token...");
-        const response = await axios.post("https://oauth2.googleapis.com/token", null, {
-            params: {
-                client_id: CLIENT_ID,
-                client_secret: CLIENT_SECRET,
-                refresh_token: REFRESH_TOKEN,
-                grant_type: "refresh_token",
-            },
-        });
-
-        console.log("Access token received:", response.data.access_token ? "SUCCESS" : "FAILED");
-        return response.data.access_token;
-    } catch (error) {
-        console.error("Failed to get access token:", error.response?.data || error.message);
-        throw error;
-    }
+  const { data } = await axios.post("https://oauth2.googleapis.com/token", null, {
+    params: {
+      client_id: CLIENT_ID,
+      client_secret: CLIENT_SECRET,
+      refresh_token: REFRESH_TOKEN,
+      grant_type: "refresh_token",
+    },
+  });
+  return data.access_token;
 }
 
-async function fetchActiveUsers() {
-    try {
-        console.log("Fetching active users from Google Analytics...");
-        const accessToken = await getAccessToken();
-        const response = await axios.post(
-            `https://analyticsdata.googleapis.com/v1beta/properties/${PROPERTY_ID}:runRealtimeReport`,
-            { metrics: [{ name: "activeUsers" }] },
-            { headers: { Authorization: `Bearer ${accessToken}` } }
-        );
+async function fetchRealtime() {
+  try {
+    const token = await getAccessToken();
+    // One realtime call: activeUsers by country
+    const { data } = await axios.post(
+      `https://analyticsdata.googleapis.com/v1beta/properties/${PROPERTY_ID}:runRealtimeReport`,
+      {
+        dimensions: [{ name: "country" }],
+        metrics: [{ name: "activeUsers" }]
+      },
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
 
-        const activeUsers = response.data.rows?.[0]?.metricValues?.[0]?.value || "0";
-        cachedData = { activeUsers: parseInt(activeUsers) }; // Store as integer
-        lastUpdated = Date.now();
-        console.log("Updated Active Users:", cachedData.activeUsers);
-    } catch (error) {
-        console.error("Error fetching active users:", error.response?.data || error.message);
+    const rows = Array.isArray(data.rows) ? data.rows : [];
+    const byCountry = {};
+    let total = 0;
+
+    for (const r of rows) {
+      const country = r.dimensionValues?.[0]?.value || "Unknown";
+      const val = parseInt(r.metricValues?.[0]?.value || "0", 10);
+      if (val > 0) {
+        byCountry[country] = (byCountry[country] || 0) + val;
+        total += val;
+      }
     }
+
+    cache.total = total;
+    cache.byCountry = byCountry;
+    cache.lastUpdated = Date.now();
+  } catch (e) {
+    console.error("Realtime fetch error:", e.response?.data || e.message);
+  }
 }
 
-// Fetch active users every 60 seconds (API call limit safe)
-setInterval(fetchActiveUsers, 60000);
-fetchActiveUsers(); // Fetch immediately on startup
+// poll
+setInterval(fetchRealtime, 60000);
+fetchRealtime();
 
+// EDIT 2: shape output with site key
 app.get('/active-users', (req, res) => {
-    res.json({ activeUsers: cachedData.activeUsers, lastUpdated });
+  res.json({
+    "https://perchance.org/ai-furry-generator": cache.total,
+    lastUpdated: cache.lastUpdated
+  });
+});
+
+// NEW for Edit 1: country stats
+app.get('/country-stats', (req, res) => {
+  res.json({
+    lastUpdated: cache.lastUpdated,
+    countries: cache.byCountry
+  });
 });
 
 const PORT = process.env.PORT || 3000;
